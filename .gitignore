@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+retriva_env/
+.env
+
+# Node / React
+node_modules/
+dist/
+build/
+
+# Database & Data
+retriva_chroma_db/
+data/
+
+# OS files
+.DS_Store
+Thumbs.db
