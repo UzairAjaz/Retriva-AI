@@ -11,9 +11,13 @@ class Settings:
     # Inference Settings
     MAX_NEW_TOKENS: int = 150
     TEMPERATURE: float = 0.1
-    TOP_N_RETRIEVAL: int = 10      # Vector search se kitne chunks layein
+    TOP_P: float = 0.9     
+    TOP_K: int = 50       
+    TOP_N_RETRIEVAL: int = 5      # Vector search se kitne chunks layein
     TOP_N_RERANKED: int = 3        # Rerank karne ke baad LLM ko kitne dein
     
     # Device Settings
     DEVICE_MAP: str = "auto"       # "auto" for GPU if available, else CPU
     TORCH_DTYPE: str = "float32"   # "float16" or "bfloat16" if using GPU
+    
+    
