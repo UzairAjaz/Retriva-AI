@@ -1,0 +1,14 @@
+retriva/
+node_modules/
+frontend/
+retriva_chroma_db/
+retriva_chroma_db_backup/
+data/
+*.db
+.git/
+.gitignore
+__pycache__/
+**/__pycache__/
+*.pyc
+dist/
+.env

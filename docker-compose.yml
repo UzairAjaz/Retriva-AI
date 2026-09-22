@@ -1,0 +1,27 @@
+services:
+  backend:
+    build: .
+    container_name: retriva-backend
+    ports:
+      - "8000:8000"
+    environment:
+      HF_LOCAL_ONLY: "true"
+      MAX_NEW_TOKENS: "384"
+      RETRIVA_SECRET_KEY: "change-this-to-a-long-random-string"
+    volumes:
+      # Local HuggingFace models (read-only) — required because HF_LOCAL_ONLY=true
+      - C:/Users/RQ/.cache/huggingface:/root/.cache/huggingface:ro
+      # Persistent state (survives rebuilds)
+      - ./retriva_chroma_db:/app/retriva_chroma_db
+      - ./retriva.db:/app/retriva.db
+      - ./data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend/retriva
+    container_name: retriva-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
