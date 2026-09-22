@@ -1,112 +1,191 @@
+"""
+Retriva knowledge-base ingestion.
+
+Indexes the financial corpus under ``data/finance`` into ChromaDB:
+
+* ``markdown/<company>/*.md``  -> ``source_type="text"``
+* ``tables/<company>/<report>/*.md`` -> ``source_type="table"`` (page aware)
+
+The script is idempotent: chunk ids are deterministic, so re-running it updates
+existing chunks instead of duplicating them. Set ``CLEAR_DB=1`` to wipe the
+collection first and rebuild from scratch.
+
+Usage:
+    python ingest.py                 # incremental
+    $env:CLEAR_DB=1; python ingest.py  # full rebuild
+"""
+
 import os
 import re
+import sys
+
+import app  # noqa: F401  (sets HF offline mode before any model import)
 import chromadb
-from langchain_experimental.text_splitter import SemanticChunker
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# 1. Configuration
-DATA_DIR = "data/finance"
-CHROMA_DB_PATH = "./retriva_chroma_db"
+from app.config import Settings
 
-print(" Loading Embedding Model (This might take a minute on first run)...")
+_settings = Settings()
+DATA_DIR = os.getenv("DATA_DIR", "data/finance")
+CHROMA_DB_PATH = _settings.CHROMA_DB_PATH
+COLLECTION_NAME = _settings.COLLECTION_NAME
 
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+COMPANIES = ["amazon", "apple", "google", "alphabet", "meta", "microsoft", "nvidia", "tesla"]
 
-semantic_splitter = SemanticChunker(embeddings, breakpoint_threshold_type="percentile", breakpoint_threshold_amount=90)
 
-print("🗄️ Connecting to Persistent Vector Database...")
-client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-collection = client.get_or_create_collection(name="retriva_financial_docs")
+def _company_from_name(name: str) -> str:
+    lowered = name.lower()
+    match = next((c for c in COMPANIES if c in lowered), None)
+    if match == "alphabet":
+        return "google"
+    return match or lowered
 
-# 2. Helper Function: Metadata Extractor
-def get_metadata(filename, source_type, page_num=None):
-    # filename example: "amazon 10-k 2023.md"
-    name_lower = filename.lower().replace(".md", "").replace(".pdf", "")
-    
-    company = name_lower.split()[0]
-    year_match = re.search(r'\b(20\d{2})\b', name_lower)
+
+def _period_from_name(name: str) -> tuple:
+    lowered = name.lower()
+    year_match = re.search(r"\b(20\d{2})\b", lowered)
     year = year_match.group(1) if year_match else "Unknown"
-    
-    doc_type = "Unknown"
-    if "10-k" in name_lower: doc_type = "10-K"
-    elif "10-q" in name_lower: doc_type = "10-Q"
-    elif "8-k" in name_lower: doc_type = "8-K"
-        
+    if "10-k" in lowered:
+        doc_type = "10-K"
+    elif "10-q" in lowered:
+        doc_type = "10-Q"
+    elif "8-k" in lowered:
+        doc_type = "8-K"
+    else:
+        doc_type = "Unknown"
+    return year, doc_type
+
+
+def _base_meta(company: str, year: str, doc_type: str, source_file: str,
+               source_type: str, page_number=None) -> dict:
     meta = {
-        "company": company, 
-        "year": year, 
-        "doc_type": doc_type, 
-        "source_file": filename,
-        "source_type": source_type # "text" or "table"
+        "company": company,
+        "year": year,
+        "doc_type": doc_type,
+        "source_file": source_file,
+        "source_type": source_type,
+        "user_id": "global",
+        "status": "processed",
     }
-    if page_num:
-        meta["page_number"] = page_num
+    if page_number is not None:
+        meta["page_number"] = page_number
     return meta
 
-# 3. Main Ingestion Logic
-all_chunks = []
-all_metadatas = []
-all_ids = []
-chunk_id_counter = 0
 
-print("\n🚀 Starting Actual Data Ingestion...\n")
+def collect_chunks(splitter):
+    """Return parallel lists of (documents, metadatas, ids)."""
+    documents, metadatas, ids = [], [], []
+    counter = 0
 
-# --- PART A: Process Markdown Files (Text) ---
-md_base = os.path.join(DATA_DIR, "markdown")
-if os.path.exists(md_base):
-    for company in os.listdir(md_base):
-        company_path = os.path.join(md_base, company)
-        if os.path.isdir(company_path):
-            print(f"📂 Processing Text for: {company}")
-            for file in os.listdir(company_path):
-                if file.endswith(".md"):
-                    file_path = os.path.join(company_path, file)
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        text = f.read()
-                    
-                    # Apply Semantic Chunking
-                    chunks = semantic_splitter.split_text(text)
-                    
-                    for chunk in chunks:
-                        if len(chunk.strip()) > 50: # Ignore tiny chunks
-                            all_chunks.append(chunk)
-                            all_metadatas.append(get_metadata(file, "text"))
-                            all_ids.append(f"chunk_{chunk_id_counter}")
-                            chunk_id_counter += 1
+    def add(text, meta, id_prefix):
+        nonlocal counter
+        text = (text or "").strip()
+        if len(text) < 50:
+            return
+        documents.append(text)
+        metadatas.append(meta)
+        ids.append(f"{id_prefix}_{counter}")
+        counter += 1
 
-# --- PART B: Process Table Files ---
-tbl_base = os.path.join(DATA_DIR, "tables")
-if os.path.exists(tbl_base):
-    for company in os.listdir(tbl_base):
-        company_path = os.path.join(tbl_base, company)
-        if os.path.isdir(company_path):
-            print(f"📂 Processing Tables for: {company}")
-            for folder in os.listdir(company_path): # e.g., "amazon 10-k 2023"
-                folder_path = os.path.join(company_path, folder)
-                if os.path.isdir(folder_path):
-                    for file in os.listdir(folder_path):
-                        if file.endswith(".md"):
-                            file_path = os.path.join(folder_path, file)
-                            with open(file_path, 'r', encoding='utf-8') as f:
-                                table_content = f.read()
-                            
-                            # Extract page number from content if possible, or filename
-                            page_match = re.search(r'\*\*Page:\*\*\s*(\d+)', table_content)
-                            page = int(page_match.group(1)) if page_match else 0
-                            
-                            all_chunks.append(table_content)
-                            all_metadatas.append(get_metadata(file, "table", page))
-                            all_ids.append(f"chunk_{chunk_id_counter}")
-                            chunk_id_counter += 1
+    # --- Markdown prose -------------------------------------------------
+    md_base = os.path.join(DATA_DIR, "markdown")
+    if os.path.isdir(md_base):
+        for company_dir in sorted(os.listdir(md_base)):
+            company_path = os.path.join(md_base, company_dir)
+            if not os.path.isdir(company_path):
+                continue
+            print(f"  text  / {company_dir}")
+            for filename in sorted(os.listdir(company_path)):
+                if not filename.endswith(".md"):
+                    continue
+                with open(os.path.join(company_path, filename), "r", encoding="utf-8", errors="ignore") as fh:
+                    text = fh.read()
+                company = _company_from_name(company_dir)
+                year, doc_type = _period_from_name(filename)
+                meta = _base_meta(company, year, doc_type, filename, "text")
+                prefix = f"md_{company}_{os.path.splitext(filename)[0].replace(' ', '_')}"
+                for chunk in splitter.split_text(text):
+                    add(chunk, dict(meta), prefix)
 
-# 4. Save to Vector Database
-print(f"\n⚙️ Generating embeddings for {len(all_chunks)} chunks... (Please wait)")
-# ChromaDB can generate embeddings automatically if we pass the texts!
-collection.add(
-    documents=all_chunks,
-    metadatas=all_metadatas,
-    ids=all_ids
-)
+    # --- Tables (page aware, keep the report context) -------------------
+    tbl_base = os.path.join(DATA_DIR, "tables")
+    if os.path.isdir(tbl_base):
+        for company_dir in sorted(os.listdir(tbl_base)):
+            company_path = os.path.join(tbl_base, company_dir)
+            if not os.path.isdir(company_path):
+                continue
+            company = _company_from_name(company_dir)
+            for report in sorted(os.listdir(company_path)):
+                report_path = os.path.join(company_path, report)
+                if not os.path.isdir(report_path):
+                    continue
+                print(f"  table / {company_dir} / {report}")
+                year, doc_type = _period_from_name(report)
+                for filename in sorted(os.listdir(report_path)):
+                    if not filename.endswith(".md"):
+                        continue
+                    with open(os.path.join(report_path, filename), "r", encoding="utf-8", errors="ignore") as fh:
+                        content = fh.read()
+                    page_match = re.search(r"\*\*Page:\*\*\s*(\d+)", content)
+                    page = int(page_match.group(1)) if page_match else None
+                    if report.lower().startswith(company):
+                        source_file = f"{report} - {filename}"
+                    else:
+                        source_file = f"{company} {report} - {filename}"
+                    meta = _base_meta(company, year, doc_type, source_file, "table", page)
+                    prefix = (
+                        f"tbl_{company}_{report.replace(' ', '_')}_"
+                        f"{os.path.splitext(filename)[0]}"
+                    )
+                    add(content, meta, prefix)
 
-print(f"\nSUCCESS! Retriva has successfully ingested {len(all_chunks)} chunks.")
-print(f"Database saved at: {CHROMA_DB_PATH}")
+    return documents, metadatas, ids
+
+
+def main() -> int:
+    print("Loading embedding model (local)…")
+    embeddings = HuggingFaceEmbeddings(
+        model_name=_settings.EMBEDDING_MODEL_NAME,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000, chunk_overlap=150, length_function=len
+    )
+
+    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+    if os.environ.get("CLEAR_DB"):
+        try:
+            client.delete_collection(name=COLLECTION_NAME)
+            print("Cleared existing collection.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"Nothing to clear: {exc}")
+    collection = client.get_or_create_collection(name=COLLECTION_NAME)
+
+    print("Collecting chunks…")
+    documents, metadatas, ids = collect_chunks(splitter)
+    if not documents:
+        print("No chunks found. Check the data/finance directory.")
+        return 1
+
+    print(f"Embedding {len(documents)} chunks…")
+    vectors = embeddings.embed_documents(documents)
+
+    batch = 500
+    for start in range(0, len(documents), batch):
+        end = start + batch
+        collection.upsert(
+            ids=ids[start:end],
+            documents=documents[start:end],
+            metadatas=metadatas[start:end],
+            embeddings=vectors[start:end],
+        )
+        print(f"  upserted {min(end, len(documents))}/{len(documents)}")
+
+    print(f"Done. Collection now holds {collection.count()} chunks at {CHROMA_DB_PATH}.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

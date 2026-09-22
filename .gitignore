@@ -11,6 +11,8 @@ build/
 
 # Database & Data
 retriva_chroma_db/
+retriva_chroma_db_backup/
+*.db
 data/
 
 # OS files

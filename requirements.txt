@@ -1,7 +1,25 @@
-streamlit
-chromadb
-torch
-transformers
-sentence-transformers
-langchain-community
-langchain-experimental
+# Retriva runtime dependencies (all local / open source)
+
+# --- Web API ---
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+pydantic>=2.7
+
+# --- Auth ---
+SQLAlchemy>=2.0
+passlib>=1.7.4
+bcrypt>=4.1
+python-jose[cryptography]>=3.3
+
+# --- Vector store & retrieval ---
+chromadb>=0.5
+rank-bm25>=0.2.2
+pypdf>=5.0
+
+# --- Embeddings / reranker / LLM (run locally from the HF cache) ---
+torch>=2.2
+transformers>=4.44
+sentence-transformers>=3.0
+langchain-huggingface>=0.1
+langchain-text-splitters>=0.3
