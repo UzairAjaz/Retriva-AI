@@ -47,31 +47,33 @@ async def lifespan(app: FastAPI):
 
 
 def _reindex_memory(engine: RetrivaEngine) -> None:
-    """Rebuild per-chat long-term memory from stored messages.
+    """Backfill per-chat long-term memory from stored messages.
 
-    Memory is keyed by message id, so this is idempotent. Each item keeps its
-    ``chat_id`` and is therefore only ever retrieved inside that chat.
+    Memory is keyed by message id, so this only embeds messages that are not
+    already indexed. That keeps restarts fast (no re-embedding the whole
+    history) and avoids blocking startup on large databases.
     """
     try:
+        existing_ids = set()
         try:
-            existing = engine.memory_collection.get()
-            existing_ids = existing.get("ids") or []
-            if existing_ids:
-                engine.memory_collection.delete(ids=existing_ids)
+            existing_ids = set(engine.memory_collection.get().get("ids") or [])
         except Exception as exc:  # noqa: BLE001
-            print(f"Memory reset skipped: {exc}")
+            print(f"Memory index lookup skipped: {exc}")
 
         with SessionLocal() as db:
             rows = db.query(Message, Chat.user_id).join(Chat, Message.chat_id == Chat.id).all()
-        indexed = 0
+
+        added = 0
         for message, owner_id in rows:
+            if message.id in existing_ids:
+                continue
             if not (message.content or "").strip():
                 continue
             engine.memory_add(
                 message.content, message.role, str(owner_id), message.chat_id, message.id
             )
-            indexed += 1
-        print(f"Memory re-indexed from {len(rows)} stored messages ({indexed} indexed).")
+            added += 1
+        print(f"Memory re-index: {added} new message(s) indexed ({len(rows)} total).")
     except Exception as exc:  # noqa: BLE001
         print(f"Memory re-index skipped: {exc}")
 

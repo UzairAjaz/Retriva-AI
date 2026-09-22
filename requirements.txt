@@ -9,7 +9,8 @@ pydantic>=2.7
 # --- Auth ---
 SQLAlchemy>=2.0
 passlib>=1.7.4
-bcrypt>=4.1
+# passlib 1.7.4 is incompatible with bcrypt>=4.1 (its internal probe raises)
+bcrypt>=4.0,<4.1
 python-jose[cryptography]>=3.3
 
 # --- Vector store & retrieval ---

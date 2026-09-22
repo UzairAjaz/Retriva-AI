@@ -9,8 +9,8 @@ services:
       MAX_NEW_TOKENS: "384"
       RETRIVA_SECRET_KEY: "change-this-to-a-long-random-string"
     volumes:
-      # Local HuggingFace models (read-only) — required because HF_LOCAL_ONLY=true
-      - C:/Users/RQ/.cache/huggingface:/root/.cache/huggingface:ro
+      # Local HuggingFace models — required because HF_LOCAL_ONLY=true
+      - C:/Users/RQ/.cache/huggingface:/root/.cache/huggingface
       # Persistent state (survives rebuilds)
       - ./retriva_chroma_db:/app/retriva_chroma_db
       - ./retriva.db:/app/retriva.db
