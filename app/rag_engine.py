@@ -38,15 +38,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 from rank_bm25 import BM25Okapi
 from sentence_transformers import CrossEncoder
-from transformers import (
-    AutoTokenizer,
-    StoppingCriteria,
-    StoppingCriteriaList,
-    TextIteratorStreamer,
-    pipeline,
-)
 
 from app.config import Settings
+from app.llm import build_llm
 from app.vector_store import build_collection
 
 logging.basicConfig(
@@ -170,16 +164,6 @@ UPLOAD_QUERY_RE = re.compile(
 )
 
 
-class _EventStoppingCriteria(StoppingCriteria):
-    """Stops generation as soon as the event is set (client pressed Stop)."""
-
-    def __init__(self, event: threading.Event):
-        self._event = event
-
-    def __call__(self, input_ids, scores, **kwargs) -> bool:  # noqa: ARG002
-        return self._event.is_set()
-
-
 class RetrivaEngine:
     """Local agentic RAG engine."""
 
@@ -202,15 +186,12 @@ class RetrivaEngine:
         )
         self.reranker = CrossEncoder(self.config.RERANKER_MODEL_NAME, device=self.device)
 
-        self.tokenizer = None
-        self.llm_pipeline = None
+        self.llm = None
         if load_llm:
             self._load_llm()
 
         # Guards the in-memory index (id maps + BM25) during uploads.
         self._index_lock = threading.RLock()
-        # The generation pipeline is not safe for concurrent calls; serialise.
-        self._llm_lock = threading.Lock()
 
         self.collection = build_collection(
             self.config, self.config.COLLECTION_NAME, self.config.EMBEDDING_DIM
@@ -295,18 +276,16 @@ class RetrivaEngine:
         return " | ".join(parts)
 
     def _load_llm(self) -> None:
-        logger.info("Loading local LLM: %s", self.config.LLM_MODEL_NAME)
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.config.LLM_MODEL_NAME, local_files_only=self.config.HF_LOCAL_ONLY
+        """Build the configured LLM backend (local pipeline or remote HTTP)."""
+        self.llm = build_llm(
+            self.config, device_arg=self._llm_device_arg(), dtype=self.dtype
         )
-        device_arg = self._llm_device_arg()
-        self.llm_pipeline = pipeline(
-            "text-generation",
-            model=self.config.LLM_MODEL_NAME,
-            dtype=self.dtype,
-            device=device_arg,
+        logger.info(
+            "LLM ready (backend=%s, device=%s, dtype=%s).",
+            self.llm.name,
+            self.device,
+            self.dtype,
         )
-        logger.info("LLM loaded on device=%s dtype=%s.", device_arg, self.dtype)
 
     def _build_index(self) -> None:
         """Load the vector store into memory and (re)build the BM25 index."""
@@ -1163,54 +1142,23 @@ class RetrivaEngine:
         messages.append({"role": "user", "content": user_query})
         return messages
 
-    def _apply_template(self, messages: List[Dict]) -> str:
-        if self.tokenizer is None:
-            self._load_llm()
-        return self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-
     # ------------------------------------------------------------------ #
-    # Generation
+    # Generation (delegated to the configured LLM backend)
     # ------------------------------------------------------------------ #
-    def _generation_kwargs(self, temperature: float, max_new_tokens: int) -> Dict:
-        kwargs: Dict = {"max_new_tokens": max_new_tokens}
-        pad_id = None
-        if self.tokenizer is not None:
-            pad_id = self.tokenizer.pad_token_id or self.tokenizer.eos_token_id
-        if pad_id is not None:
-            kwargs["pad_token_id"] = pad_id
-        if temperature and temperature > 0.25:
-            kwargs.update(
-                do_sample=True,
-                temperature=float(temperature),
-                top_p=self.config.TOP_P,
-                top_k=self.config.TOP_K,
-            )
-        else:
-            # Low temperature (the default) uses greedy decoding: more stable and
-            # more accurate for factual/finance answers.
-            kwargs.update(do_sample=False)
-        return kwargs
-
     def _generate(
         self,
         messages: List[Dict],
         temperature: float = 0.1,
         max_new_tokens: Optional[int] = None,
     ) -> str:
-        if self.llm_pipeline is None:
+        if self.llm is None:
             self._load_llm()
-        prompt = self._apply_template(messages)
-        max_new_tokens = max_new_tokens or self.config.MAX_NEW_TOKENS
         try:
-            with self._llm_lock:
-                output = self.llm_pipeline(
-                    prompt,
-                    return_full_text=False,
-                    **self._generation_kwargs(temperature, max_new_tokens),
-                )
-            text = output[0]["generated_text"]
+            text = self.llm.generate(
+                messages,
+                temperature=temperature,
+                max_new_tokens=max_new_tokens or self.config.MAX_NEW_TOKENS,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.error("Generation failed: %s", exc)
             return "I couldn't generate a response right now. Please try again."
@@ -1220,46 +1168,9 @@ class RetrivaEngine:
         self, messages: List[Dict], temperature: float = 0.1
     ) -> object:
         """Yield generated text chunks as they are produced."""
-        if self.llm_pipeline is None:
+        if self.llm is None:
             self._load_llm()
-        prompt = self._apply_template(messages)
-        streamer = TextIteratorStreamer(
-            self.tokenizer, skip_prompt=True, skip_special_tokens=True
-        )
-        stop_event = threading.Event()
-        kwargs = self._generation_kwargs(temperature, self.config.MAX_NEW_TOKENS)
-        kwargs["text_inputs"] = prompt
-        kwargs["streamer"] = streamer
-        kwargs["stopping_criteria"] = StoppingCriteriaList(
-            [_EventStoppingCriteria(stop_event)]
-        )
-
-        errors: Dict[str, BaseException] = {}
-
-        def _run() -> None:
-            try:
-                with self._llm_lock:
-                    self.llm_pipeline(**kwargs)
-            except BaseException as exc:  # noqa: BLE001
-                errors["error"] = exc
-                logger.error("Streaming generation failed: %s", exc)
-            finally:
-                streamer.end()
-
-        thread = threading.Thread(target=_run, daemon=True)
-        thread.start()
-        try:
-            for piece in streamer:
-                if piece:
-                    yield piece
-        finally:
-            # Runs when the client disconnects / presses Stop: signals the model
-            # to stop at the next decoding step instead of generating to the end.
-            stop_event.set()
-            streamer.end()
-            thread.join(timeout=5)
-        if "error" in errors:
-            yield "\n\n*(generation interrupted)*"
+        yield from self.llm.stream(messages, temperature=temperature)
 
     # ------------------------------------------------------------------ #
     # High level query flow

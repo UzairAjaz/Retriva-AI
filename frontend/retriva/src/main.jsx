@@ -13,7 +13,10 @@ const suggestions = [
   "What were Amazon's major expenses?",
 ];
 
-const API = "http://localhost:8000";
+// API base URL. Empty string => same-origin (nginx proxies /api to the backend),
+// which is what we use in containers. For a separately-hosted frontend (S3/CDN)
+// set VITE_API_URL at build time, e.g. https://api.example.com
+const API = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
 
 function App() {
   // --- AUTH STATES ---

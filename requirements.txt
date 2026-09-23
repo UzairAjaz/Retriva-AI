@@ -17,6 +17,10 @@ python-jose[cryptography]>=3.3
 # PostgreSQL driver for production (DATABASE_URL=postgresql+psycopg2://...)
 psycopg2-binary>=2.9
 
+# --- LLM backend (only the backend you enable is imported at runtime) ---
+# RemoteLLM talks to an OpenAI-compatible endpoint (vLLM/TGI/Ollama/...).
+httpx>=0.27
+
 # --- Object storage (only the backend you enable is imported at runtime) ---
 boto3>=1.34
 azure-storage-blob>=12.19
