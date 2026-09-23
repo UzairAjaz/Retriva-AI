@@ -128,6 +128,7 @@ class Settings:
     LOCAL_STORAGE_DIR: str = os.getenv("LOCAL_STORAGE_DIR", "./uploads")
     S3_BUCKET: str = os.getenv("S3_BUCKET", "")
     S3_PREFIX: str = os.getenv("S3_PREFIX", "uploads/")
+    S3_ENDPOINT_URL: str = os.getenv("S3_ENDPOINT_URL", "")  # MinIO/LocalStack
     AWS_REGION: str = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", ""))
     AZURE_STORAGE_CONNECTION_STRING: str = os.getenv(
         "AZURE_STORAGE_CONNECTION_STRING", ""

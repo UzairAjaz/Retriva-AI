@@ -1650,7 +1650,11 @@ class RetrivaEngine:
         return {"company": company, "year": year, "doc_type": doc_type}
 
     def ingest_pdf(
-        self, filename: str, file_content: bytes, user_id: str = "global"
+        self,
+        filename: str,
+        file_content: bytes,
+        user_id: str = "global",
+        storage_key: Optional[str] = None,
     ) -> Dict[str, object]:
         """Parse, chunk and embed a user-uploaded PDF into the knowledge base."""
         try:
@@ -1690,18 +1694,19 @@ class RetrivaEngine:
                     if len(chunk) < 50:
                         continue
                     docs_to_add.append(chunk)
-                    metas_to_add.append(
-                        {
-                            **meta_base,
-                            "source_file": filename,
-                            "source_type": "pdf_upload",
-                            "user_id": str(user_id),
-                            "document_id": document_id,
-                            "page_number": page_number,
-                            "ingested_at": timestamp,
-                            "status": "processed",
-                        }
-                    )
+                    chunk_meta = {
+                        **meta_base,
+                        "source_file": filename,
+                        "source_type": "pdf_upload",
+                        "user_id": str(user_id),
+                        "document_id": document_id,
+                        "page_number": page_number,
+                        "ingested_at": timestamp,
+                        "status": "processed",
+                    }
+                    if storage_key:
+                        chunk_meta["storage_key"] = storage_key
+                    metas_to_add.append(chunk_meta)
                     ids_to_add.append(f"upload_{uuid.uuid4().hex}")
 
             if not docs_to_add:

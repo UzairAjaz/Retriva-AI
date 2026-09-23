@@ -24,18 +24,22 @@ from app.auth import (
 )
 from app.database import Chat, Message, SessionLocal, User, get_db
 from app.rag_engine import RetrivaEngine
+from app.storage import BaseStorage, build_object_key, build_storage
 
-# --- Engine singleton (loaded once on startup) ---
+# --- Process-wide singletons (loaded once on startup) ---
 rag_engine: Optional[RetrivaEngine] = None
+object_storage: Optional[BaseStorage] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global rag_engine
+    global rag_engine, object_storage
     print("Loading Retriva Engine (this can take a minute)…")
     try:
         rag_engine = RetrivaEngine()
         print("Retriva Engine loaded successfully.")
+        object_storage = build_storage(rag_engine.config)
+        print(f"Object storage ready ({object_storage.backend}).")
         _reindex_memory(rag_engine)
     except Exception as exc:  # noqa: BLE001
         print(f"Failed to load Retriva Engine: {exc}")
@@ -43,6 +47,7 @@ async def lifespan(app: FastAPI):
         raise
     yield
     rag_engine = None
+    object_storage = None
     print("Retriva Engine shut down.")
 
 
@@ -82,6 +87,12 @@ def get_engine() -> RetrivaEngine:
     if rag_engine is None:
         raise HTTPException(status_code=503, detail="Engine is still starting up.")
     return rag_engine
+
+
+def get_storage() -> BaseStorage:
+    if object_storage is None:
+        raise HTTPException(status_code=503, detail="Storage is still starting up.")
+    return object_storage
 
 
 app = FastAPI(title="Retriva API", version="2.0.0", lifespan=lifespan)
@@ -439,6 +450,7 @@ async def ingest_document(
     file: UploadFile = File(...), current_user: User = Depends(get_current_user)
 ):
     engine = get_engine()
+    storage = get_storage()
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext != ".pdf":
         raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
@@ -450,9 +462,24 @@ async def ingest_document(
         raise HTTPException(status_code=413, detail="File too large. Max 20MB.")
 
     clean_name = sanitize_filename(file.filename)
+    user_id = str(current_user.id)
+
+    # Persist the original file to object storage (S3/Blob) so the API stays
+    # stateless; the extracted text is indexed into the vector store.
+    storage_key = None
+    try:
+        object_key = build_object_key(clean_name, user_id)
+        stored = await run_in_threadpool(
+            storage.save, object_key, file_content, "application/pdf"
+        )
+        storage_key = stored.key
+    except Exception as exc:  # noqa: BLE001
+        print("STORAGE ERROR:\n", traceback.format_exc())
+        raise HTTPException(status_code=502, detail=f"Object storage failed: {exc}")
+
     try:
         result = await run_in_threadpool(
-            engine.ingest_pdf, clean_name, file_content, str(current_user.id)
+            engine.ingest_pdf, clean_name, file_content, user_id, storage_key
         )
     except Exception as exc:  # noqa: BLE001
         print("INGEST ERROR:\n", traceback.format_exc())
@@ -463,6 +490,7 @@ async def ingest_document(
             "message": f"Processed '{clean_name}'",
             "chunks": result.get("chunks_added", 0),
             "document_id": result.get("document_id"),
+            "storage_key": storage_key,
         }
     raise HTTPException(status_code=422, detail=result.get("message", "Ingestion failed"))
 
