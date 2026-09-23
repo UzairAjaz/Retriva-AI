@@ -13,6 +13,10 @@ passlib>=1.7.4
 bcrypt>=4.0,<4.1
 python-jose[cryptography]>=3.3
 
+# --- Database drivers ---
+# PostgreSQL driver for production (DATABASE_URL=postgresql+psycopg2://...)
+psycopg2-binary>=2.9
+
 # --- Vector store & retrieval ---
 chromadb>=0.5
 rank-bm25>=0.2.2

@@ -95,9 +95,51 @@ class Settings:
     # scoped to a single chat; the only cross-chat knowledge is the user's bio.
     SHARE_KNOWLEDGE_ACROSS_USERS: bool = _env_bool("SHARE_KNOWLEDGE_ACROSS_USERS", True)
 
-    # --- Device ------------------------------------------------------------
-    DEVICE: str = os.getenv("RETRIVA_DEVICE", "auto")  # auto | cpu | cuda
-    TORCH_DTYPE: str = os.getenv("RETRIVA_TORCH_DTYPE", "float32")
+    # --- Hardware (GPU / CPU auto-detection) -------------------------------
+    # DEVICE:      auto | cpu | cuda | cuda:0 | mps
+    # TORCH_DTYPE: auto | float32 | float16 | bfloat16
+    DEVICE: str = os.getenv("RETRIVA_DEVICE", "auto")
+    TORCH_DTYPE: str = os.getenv("RETRIVA_TORCH_DTYPE", "auto")
+    # Optional separate device for the LLM (defaults to DEVICE).
+    LLM_DEVICE: str = os.getenv("LLM_DEVICE", "")
+
+    # --- Database (relational) ---------------------------------------------
+    # Local default is SQLite; production should point at PostgreSQL, e.g.
+    # postgresql+psycopg2://user:pass@host:5432/retriva
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./retriva.db")
+    DB_POOL_SIZE: int = _env_int("DB_POOL_SIZE", 5)
+    DB_MAX_OVERFLOW: int = _env_int("DB_MAX_OVERFLOW", 10)
+    DB_POOL_RECYCLE: int = _env_int("DB_POOL_RECYCLE", 1800)
+    DB_ECHO: bool = _env_bool("DB_ECHO", False)
+
+    # --- Vector store ------------------------------------------------------
+    # chroma = local/embedded (default), pgvector = Postgres-backed (cloud)
+    VECTOR_BACKEND: str = os.getenv("VECTOR_BACKEND", "chroma")
+    PGVECTOR_URL: str = os.getenv("PGVECTOR_URL", "")  # defaults to DATABASE_URL
+    PGVECTOR_TABLE: str = os.getenv("PGVECTOR_TABLE", "retriva_embeddings")
+    PGVECTOR_MEMORY_TABLE: str = os.getenv(
+        "PGVECTOR_MEMORY_TABLE", "retriva_memory_embeddings"
+    )
+    EMBEDDING_DIM: int = _env_int("EMBEDDING_DIM", 384)
+
+    # --- Object storage (uploaded files) -----------------------------------
+    # local | s3 | azure
+    STORAGE_BACKEND: str = os.getenv("STORAGE_BACKEND", "local")
+    LOCAL_STORAGE_DIR: str = os.getenv("LOCAL_STORAGE_DIR", "./uploads")
+    S3_BUCKET: str = os.getenv("S3_BUCKET", "")
+    S3_PREFIX: str = os.getenv("S3_PREFIX", "uploads/")
+    AWS_REGION: str = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", ""))
+    AZURE_STORAGE_CONNECTION_STRING: str = os.getenv(
+        "AZURE_STORAGE_CONNECTION_STRING", ""
+    )
+    AZURE_STORAGE_CONTAINER: str = os.getenv("AZURE_STORAGE_CONTAINER", "uploads")
+
+    # --- LLM backend (local in-process pipeline vs remote HTTP) ------------
+    # local | remote ; remote expects an OpenAI-compatible endpoint (vLLM/TGI).
+    LLM_BACKEND: str = os.getenv("LLM_BACKEND", "local")
+    LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")  # e.g. http://vllm:8000/v1
+    LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
+    LLM_REQUEST_TIMEOUT: int = _env_int("LLM_REQUEST_TIMEOUT", 300)
 
 
 # Force HuggingFace libraries to stay offline when local-only mode is on. All

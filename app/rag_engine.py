@@ -186,8 +186,14 @@ class RetrivaEngine:
     TOOLS = ("retrieve_documents", "answer_directly", "ask_clarification")
     def __init__(self, load_llm: bool = True):
         self.config = Settings()
-        self.device = self._resolve_device()
-        logger.info("Initializing Retriva Engine (device=%s)…", self.device)
+        self.device = self._resolve_device(self.config.DEVICE)
+        self.dtype = self._resolve_dtype(self.device)
+        logger.info("Hardware detected: %s", self._hardware_summary())
+        logger.info(
+            "Initializing Retriva Engine (device=%s, dtype=%s)…",
+            self.device,
+            self.dtype,
+        )
 
         self.embedding_model = HuggingFaceEmbeddings(
             model_name=self.config.EMBEDDING_MODEL_NAME,
@@ -223,32 +229,85 @@ class RetrivaEngine:
     # ------------------------------------------------------------------ #
     # Setup helpers
     # ------------------------------------------------------------------ #
-    def _resolve_device(self) -> str:
-        requested = (self.config.DEVICE or "auto").lower()
-        if requested == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        if requested.startswith("cuda") and not torch.cuda.is_available():
+    def _resolve_device(self, requested: str) -> str:
+        """Pick the best available device, honouring an explicit override.
+
+        Priority for ``auto``: CUDA (NVIDIA) → MPS (Apple) → CPU. An explicit
+        request for an unavailable device degrades gracefully to CPU so the
+        container still starts (e.g. a GPU image running on a CPU node).
+        """
+        requested = (requested or "auto").strip().lower()
+        cuda_available = torch.cuda.is_available()
+        mps_backend = getattr(torch.backends, "mps", None)
+        mps_available = bool(mps_backend and mps_backend.is_available())
+
+        if requested in ("", "auto"):
+            if cuda_available:
+                return "cuda"
+            if mps_available:
+                return "mps"
+            return "cpu"
+        if requested.startswith("cuda") and not cuda_available:
             logger.warning("CUDA requested but unavailable – falling back to CPU.")
             return "cpu"
+        if requested.startswith("mps") and not mps_available:
+            logger.warning("MPS requested but unavailable – falling back to CPU.")
+            return "cpu"
         return requested
+
+    def _resolve_dtype(self, device: str):
+        """Choose the compute dtype (float16/bfloat16 on GPU, float32 on CPU)."""
+        requested = (self.config.TORCH_DTYPE or "auto").strip().lower()
+        if requested not in ("", "auto"):
+            dtype = getattr(torch, requested, None)
+            if isinstance(dtype, torch.dtype):
+                return dtype
+            logger.warning("Unknown RETRIVA_TORCH_DTYPE=%r – using auto.", requested)
+        if device.startswith("cuda"):
+            try:
+                if torch.cuda.is_bf16_supported():
+                    return torch.bfloat16
+            except Exception:  # noqa: BLE001
+                pass
+            return torch.float16
+        return torch.float32
+
+    def _llm_device_arg(self):
+        """Device argument accepted by the transformers pipeline."""
+        device = (self.config.LLM_DEVICE or "").strip() or self.device
+        device = self._resolve_device(device)
+        if device.startswith("cuda"):
+            parts = device.split(":")
+            return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        return device
+
+    def _hardware_summary(self) -> str:
+        parts = [f"torch={torch.__version__}"]
+        if torch.cuda.is_available():
+            try:
+                name = torch.cuda.get_device_name(0)
+            except Exception:  # noqa: BLE001
+                name = "cuda"
+            parts.append(f"cuda={torch.cuda.device_count()}x {name}")
+        else:
+            parts.append("cuda=unavailable")
+        parts.append(f"device={self.device}")
+        parts.append(f"dtype={self.dtype}")
+        return " | ".join(parts)
 
     def _load_llm(self) -> None:
         logger.info("Loading local LLM: %s", self.config.LLM_MODEL_NAME)
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.config.LLM_MODEL_NAME, local_files_only=self.config.HF_LOCAL_ONLY
         )
-        try:
-            dtype = getattr(torch, self.config.TORCH_DTYPE)
-        except AttributeError:
-            dtype = torch.float32
-        device_arg = 0 if self.device.startswith("cuda") else "cpu"
+        device_arg = self._llm_device_arg()
         self.llm_pipeline = pipeline(
             "text-generation",
             model=self.config.LLM_MODEL_NAME,
-            dtype=dtype,
+            dtype=self.dtype,
             device=device_arg,
         )
-        logger.info("LLM loaded.")
+        logger.info("LLM loaded on device=%s dtype=%s.", device_arg, self.dtype)
 
     def _build_index(self) -> None:
         """Load the vector store into memory and (re)build the BM25 index."""
