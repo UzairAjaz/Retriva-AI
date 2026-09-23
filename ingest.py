@@ -20,11 +20,11 @@ import re
 import sys
 
 import app  # noqa: F401  (sets HF offline mode before any model import)
-import chromadb
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.config import Settings
+from app.vector_store import build_collection
 
 _settings = Settings()
 DATA_DIR = os.getenv("DATA_DIR", "data/finance")
@@ -144,24 +144,29 @@ def collect_chunks(splitter):
 
 
 def main() -> int:
-    print("Loading embedding model (local)…")
+    import torch
+
+    device = "cpu"
+    requested = (_settings.DEVICE or "auto").strip().lower()
+    if torch.cuda.is_available() and (requested in ("", "auto") or requested.startswith("cuda")):
+        device = "cuda"
+    print(f"Loading embedding model (local, device={device})…")
     embeddings = HuggingFaceEmbeddings(
         model_name=_settings.EMBEDDING_MODEL_NAME,
-        model_kwargs={"device": "cpu"},
+        model_kwargs={"device": device},
         encode_kwargs={"normalize_embeddings": True},
     )
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000, chunk_overlap=150, length_function=len
     )
 
-    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+    collection = build_collection(_settings, COLLECTION_NAME, _settings.EMBEDDING_DIM)
     if os.environ.get("CLEAR_DB"):
         try:
-            client.delete_collection(name=COLLECTION_NAME)
+            collection.clear()
             print("Cleared existing collection.")
         except Exception as exc:  # noqa: BLE001
             print(f"Nothing to clear: {exc}")
-    collection = client.get_or_create_collection(name=COLLECTION_NAME)
 
     print("Collecting chunks…")
     documents, metadatas, ids = collect_chunks(splitter)
@@ -183,7 +188,10 @@ def main() -> int:
         )
         print(f"  upserted {min(end, len(documents))}/{len(documents)}")
 
-    print(f"Done. Collection now holds {collection.count()} chunks at {CHROMA_DB_PATH}.")
+    print(
+        f"Done. Collection now holds {collection.count()} chunks "
+        f"(backend={_settings.VECTOR_BACKEND})."
+    )
     return 0
 
 

@@ -32,7 +32,6 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
 
-import chromadb
 import torch
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -48,6 +47,7 @@ from transformers import (
 )
 
 from app.config import Settings
+from app.vector_store import build_collection
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -212,12 +212,11 @@ class RetrivaEngine:
         # The generation pipeline is not safe for concurrent calls; serialise.
         self._llm_lock = threading.Lock()
 
-        self.chroma_client = chromadb.PersistentClient(path=self.config.CHROMA_DB_PATH)
-        self.collection = self.chroma_client.get_or_create_collection(
-            name=self.config.COLLECTION_NAME
+        self.collection = build_collection(
+            self.config, self.config.COLLECTION_NAME, self.config.EMBEDDING_DIM
         )
-        self.memory_collection = self.chroma_client.get_or_create_collection(
-            name=self.config.MEMORY_COLLECTION_NAME
+        self.memory_collection = build_collection(
+            self.config, self.config.MEMORY_COLLECTION_NAME, self.config.EMBEDDING_DIM
         )
         # Documents are split by a fast recursive splitter for uploads.
         self.text_splitter = RecursiveCharacterTextSplitter(
@@ -311,7 +310,7 @@ class RetrivaEngine:
 
     def _build_index(self) -> None:
         """Load the vector store into memory and (re)build the BM25 index."""
-        logger.info("Loading knowledge base from %s …", self.config.CHROMA_DB_PATH)
+        logger.info("Loading knowledge base (backend=%s) …", self.config.VECTOR_BACKEND)
         data = self.collection.get(include=["documents", "metadatas"])
         ids = data.get("ids") or []
         docs = data.get("documents") or []
