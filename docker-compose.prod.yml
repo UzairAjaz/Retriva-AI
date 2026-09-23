@@ -1,0 +1,75 @@
+# Production-oriented stack: PostgreSQL + pgvector instead of SQLite + Chroma.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#   docker compose -f docker-compose.prod.yml exec backend python ingest.py
+#
+# Override any value with an env file (see .env.example):
+#   RETRIVA_SECRET_KEY=... POSTGRES_PASSWORD=... \
+#   docker compose -f docker-compose.prod.yml up -d
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: retriva
+      POSTGRES_USER: retriva
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U retriva -d retriva"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: ${BACKEND_DOCKERFILE:-Dockerfile}
+    environment:
+      # --- state: Postgres + pgvector ---
+      DATABASE_URL: postgresql+psycopg2://retriva:${POSTGRES_PASSWORD:-postgres}@db:5432/retriva
+      VECTOR_BACKEND: pgvector
+      # --- hardware: auto = CUDA -> MPS -> CPU ---
+      RETRIVA_DEVICE: ${RETRIVA_DEVICE:-auto}
+      RETRIVA_TORCH_DTYPE: auto
+      # --- security ---
+      RETRIVA_SECRET_KEY: ${RETRIVA_SECRET_KEY:?set RETRIVA_SECRET_KEY}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+      # --- optional: object storage (local | s3 | azure) ---
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_PREFIX: ${S3_PREFIX:-uploads/}
+      AWS_REGION: ${AWS_REGION:-}
+      AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+      AZURE_STORAGE_CONTAINER: ${AZURE_STORAGE_CONTAINER:-uploads}
+      # --- optional: remote inference (local | remote) ---
+      LLM_BACKEND: ${LLM_BACKEND:-local}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      # --- models ---
+      HF_LOCAL_ONLY: "true"
+      LLM_MODEL_NAME: ${LLM_MODEL_NAME:-Qwen/Qwen2.5-1.5B-Instruct}
+    volumes:
+      # Mount the model cache (or bake/download it in the image for cloud).
+      - ${HF_CACHE:-C:/Users/RQ/.cache/huggingface}:/home/appuser/.cache/huggingface
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend/retriva
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:

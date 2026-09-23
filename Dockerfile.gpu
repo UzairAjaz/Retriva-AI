@@ -1,24 +1,27 @@
-FROM python:3.12-slim
+# GPU image for cloud inference (AWS g5/g6, Azure NC-series, or a GPU node pool).
+# The RETRIVA_DEVICE=auto default makes the app use CUDA automatically.
+#
+# Build:  docker build -f Dockerfile.gpu -t retriva-backend:gpu .
+# Run:    docker run --gpus all -p 8000:8000 retriva-backend:gpu
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     HF_LOCAL_ONLY=true \
-    HF_HOME=/home/appuser/.cache/huggingface
+    HF_HOME=/home/appuser/.cache/huggingface \
+    RETRIVA_DEVICE=auto \
+    RETRIVA_TORCH_DTYPE=auto
 
 WORKDIR /app
 
-# curl = healthcheck; libgomp1 = required by some ML wheels
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 
-# CPU-only PyTorch first (avoids ~2 GB of CUDA libraries)
-RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
-
+# torch (CUDA build) already ships with the base image
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# Run as a non-root user
 RUN useradd -m -u 1000 appuser
 COPY . .
 RUN mkdir -p /app/uploads && chown -R appuser:appuser /app /home/appuser
