@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 retriva_env/
+.venv/
+.pytest_cache/
+.ruff_cache/
 .env
 
 # Node / React

@@ -68,6 +68,29 @@ Models are expected in the local HF cache:
 * `sentence-transformers/all-MiniLM-L6-v2`
 * `cross-encoder/ms-marco-MiniLM-L-6-v2`
 
+## Observability and OpsFlow integration
+
+Application logs are emitted as single-line JSON with:
+
+```text
+timestamp, level, service, environment, commit_sha,
+trace_id, request_id, error_class, file, line, stack_trace, message
+```
+
+Configure them with:
+
+```env
+SERVICE_NAME=retriva-api
+ENVIRONMENT=local
+GIT_COMMIT_SHA=
+LOG_LEVEL=INFO
+ENABLE_TEST_BUG=false
+```
+
+`GET /healthz` is a minimal liveness endpoint. `GET /debug/boom` raises a real
+`KeyError` only when `ENABLE_TEST_BUG=true`; it is used by the OpsFlow staging
+pipeline to verify CloudWatch → SQS ingestion.
+
 ## Configuration
 
 All settings live in `app/config.py` and can be overridden with environment
