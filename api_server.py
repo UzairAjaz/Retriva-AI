@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
@@ -25,6 +25,11 @@ from app.auth import (
 from app.database import Chat, Message, SessionLocal, User, get_db
 from app.rag_engine import RetrivaEngine
 from app.storage import BaseStorage, build_object_key, build_storage
+from observability.logging_config import configure_logging, get_logger
+from observability.request_context import RequestContextMiddleware
+
+configure_logging()
+logger = get_logger(__name__)
 
 # --- Process-wide singletons (loaded once on startup) ---
 rag_engine: Optional[RetrivaEngine] = None
@@ -34,21 +39,20 @@ object_storage: Optional[BaseStorage] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global rag_engine, object_storage
-    print("Loading Retriva Engine (this can take a minute)…")
+    logger.info("Loading Retriva Engine (this can take a minute)")
     try:
         rag_engine = RetrivaEngine()
-        print("Retriva Engine loaded successfully.")
+        logger.info("Retriva Engine loaded successfully")
         object_storage = build_storage(rag_engine.config)
-        print(f"Object storage ready ({object_storage.backend}).")
+        logger.info("Object storage ready", extra={"storage_backend": object_storage.backend})
         _reindex_memory(rag_engine)
-    except Exception as exc:  # noqa: BLE001
-        print(f"Failed to load Retriva Engine: {exc}")
-        traceback.print_exc()
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to load Retriva Engine")
         raise
     yield
     rag_engine = None
     object_storage = None
-    print("Retriva Engine shut down.")
+    logger.info("Retriva Engine shut down")
 
 
 def _reindex_memory(engine: RetrivaEngine) -> None:
@@ -96,6 +100,7 @@ def get_storage() -> BaseStorage:
 
 
 app = FastAPI(title="Retriva API", version="2.0.0", lifespan=lifespan)
+app.add_middleware(RequestContextMiddleware)
 
 allowed_origins = os.getenv(
     "ALLOWED_ORIGINS",
@@ -111,6 +116,16 @@ app.add_middleware(
 )
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc: Exception):
+    logger.error(
+        "unhandled exception",
+        exc_info=(type(exc), exc, exc.__traceback__),
+        extra={"error_class": type(exc).__name__},
+    )
+    return JSONResponse(status_code=500, content={"detail": "internal server error"})
 
 
 # ===================== Pydantic schemas =====================
@@ -493,6 +508,18 @@ async def ingest_document(
             "storage_key": storage_key,
         }
     raise HTTPException(status_code=422, detail=result.get("message", "Ingestion failed"))
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok"}
+
+
+@app.get("/debug/boom")
+def debug_boom():
+    if os.getenv("ENABLE_TEST_BUG") != "true":
+        raise HTTPException(status_code=404, detail="Not found")
+    raise KeyError("intentional staging test bug")
 
 
 @app.get("/health")

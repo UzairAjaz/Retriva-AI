@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 logger = logging.getLogger("retriva.vectorstore")
 
