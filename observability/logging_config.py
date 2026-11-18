@@ -6,7 +6,11 @@ import os
 import traceback
 from datetime import datetime, timezone
 
-from observability.request_context import request_id_var, trace_id_var
+from observability.request_context import (
+    RequestContextFilter,
+    request_id_var,
+    trace_id_var,
+)
 
 
 class JsonFormatter(logging.Formatter):
@@ -21,8 +25,8 @@ class JsonFormatter(logging.Formatter):
             "service": os.getenv("SERVICE_NAME", "retriva-api"),
             "environment": os.getenv("ENVIRONMENT", "local"),
             "commit_sha": os.getenv("GIT_COMMIT_SHA", ""),
-            "trace_id": trace_id_var.get(),
-            "request_id": request_id_var.get(),
+            "trace_id": getattr(record, "trace_id", "") or trace_id_var.get(),
+            "request_id": getattr(record, "request_id", "") or request_id_var.get(),
             "error_class": getattr(record, "error_class", ""),
             "file": getattr(record, "file_path", ""),
             "line": getattr(record, "line_number", 0),
@@ -50,6 +54,7 @@ def configure_logging(level: str | None = None) -> logging.Logger:
 
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter())
+    handler.addFilter(RequestContextFilter())
     root.addHandler(handler)
     return root
 

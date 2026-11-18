@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -5,7 +7,7 @@ import traceback
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,12 +25,16 @@ from app.auth import (
     get_password_hash,
 )
 from app.database import Chat, Message, SessionLocal, User, get_db
-from app.rag_engine import RetrivaEngine
 from app.storage import BaseStorage, build_object_key, build_storage
+from observability.cloudwatch import configure_cloudwatch_logging
 from observability.logging_config import configure_logging, get_logger
 from observability.request_context import RequestContextMiddleware
 
+if TYPE_CHECKING:
+    from app.rag_engine import RetrivaEngine
+
 configure_logging()
+configure_cloudwatch_logging()
 logger = get_logger(__name__)
 
 # --- Process-wide singletons (loaded once on startup) ---
@@ -41,6 +47,8 @@ async def lifespan(app: FastAPI):
     global rag_engine, object_storage
     logger.info("Loading Retriva Engine (this can take a minute)")
     try:
+        from app.rag_engine import RetrivaEngine
+
         rag_engine = RetrivaEngine()
         logger.info("Retriva Engine loaded successfully")
         object_storage = build_storage(rag_engine.config)
@@ -123,7 +131,11 @@ async def unhandled_exception_handler(request, exc: Exception):
     logger.error(
         "unhandled exception",
         exc_info=(type(exc), exc, exc.__traceback__),
-        extra={"error_class": type(exc).__name__},
+        extra={
+            "error_class": type(exc).__name__,
+            "request_id": getattr(request.state, "request_id", ""),
+            "trace_id": getattr(request.state, "trace_id", ""),
+        },
     )
     return JSONResponse(status_code=500, content={"detail": "internal server error"})
 

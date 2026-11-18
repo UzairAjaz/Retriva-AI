@@ -25,6 +25,9 @@ httpx>=0.27
 boto3>=1.34
 azure-storage-blob>=12.19
 
+# --- Optional local CloudWatch log shipping (zero-cost ingestion) ---
+watchtower>=3.0
+
 # --- Vector store & retrieval ---
 chromadb>=0.5
 rank-bm25>=0.2.2

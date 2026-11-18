@@ -5,7 +5,11 @@ import json
 import logging
 
 from observability.logging_config import JsonFormatter
-from observability.request_context import request_id_var, trace_id_var
+from observability.request_context import (
+    RequestContextFilter,
+    request_id_var,
+    trace_id_var,
+)
 
 
 def _logger_with_stream() -> tuple[logging.Logger, io.StringIO]:
@@ -43,6 +47,28 @@ def test_json_formatter_includes_required_fields(monkeypatch):
     assert payload["error_class"] == ""
     assert payload["file"] == ""
     assert payload["line"] == 0
+
+
+def test_context_filter_captures_ids_for_async_handlers(monkeypatch):
+    monkeypatch.setenv("SERVICE_NAME", "retriva-api")
+    request_id_var.set("req-async")
+    trace_id_var.set("trace-async")
+    record = logging.LogRecord(
+        name="retriva.tests",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=1,
+        msg="async handler record",
+        args=(),
+        exc_info=None,
+    )
+    RequestContextFilter().filter(record)
+    request_id_var.set("")
+    trace_id_var.set("")
+
+    payload = json.loads(JsonFormatter().format(record))
+    assert payload["request_id"] == "req-async"
+    assert payload["trace_id"] == "trace-async"
 
 
 def test_json_formatter_captures_exception_location(monkeypatch):
