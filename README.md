@@ -91,6 +91,22 @@ ENABLE_TEST_BUG=false
 `KeyError` only when `ENABLE_TEST_BUG=true`; it is used by the OpsFlow staging
 pipeline to verify CloudWatch → SQS ingestion.
 
+### Optional CloudWatch shipping
+
+The app can run locally and ship JSON logs directly to CloudWatch without ECS
+or a CloudWatch agent:
+
+```env
+CLOUDWATCH_ENABLED=true
+CLOUDWATCH_LOG_GROUP=/opsflow/retriva-api
+CLOUDWATCH_LOG_STREAM=retriva-api-local
+CLOUDWATCH_SEND_INTERVAL=1
+AWS_REGION=eu-north-1
+```
+
+CloudWatch shipping is disabled by default and requires only
+`logs:CreateLogStream` and `logs:PutLogEvents`.
+
 ## Configuration
 
 All settings live in `app/config.py` and can be overridden with environment
