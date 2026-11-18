@@ -531,7 +531,7 @@ def healthz():
 def debug_boom():
     if os.getenv("ENABLE_TEST_BUG") != "true":
         raise HTTPException(status_code=404, detail="Not found")
-    raise KeyError("intentional staging test bug")
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 @app.get("/health")
