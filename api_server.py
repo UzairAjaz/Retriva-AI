@@ -26,6 +26,7 @@ from app.auth import (
 )
 from app.database import Chat, Message, SessionLocal, User, get_db
 from app.storage import BaseStorage, build_object_key, build_storage
+from app.usage import average_cost_per_request
 from observability.cloudwatch import configure_cloudwatch_logging
 from observability.logging_config import configure_logging, get_logger
 from observability.request_context import RequestContextMiddleware
@@ -520,6 +521,13 @@ async def ingest_document(
             "storage_key": storage_key,
         }
     raise HTTPException(status_code=422, detail=result.get("message", "Ingestion failed"))
+
+
+@app.get("/api/usage/average-cost")
+def usage_average_cost(total_cost_usd: float = 0.0, request_count: int = 0):
+    return {
+        "average_cost_usd": average_cost_per_request(total_cost_usd, request_count)
+    }
 
 
 @app.get("/healthz")
